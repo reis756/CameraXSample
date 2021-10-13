@@ -80,59 +80,31 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
-/** Helper type alias used for analysis use case callbacks */
 typealias LumaListener = (luma: Double) -> Unit
 
-/**
- * Main fragment for this app. Implements all camera operations including:
- * - Viewfinder
- * - Photo taking
- * - Image analysis
- */
-class CameraFragment : Fragment() {
+class CameraFragment : BaseFragment<FragmentCameraBinding>() {
 
-    private var _fragmentCameraBinding: FragmentCameraBinding? = null
-
-    private val fragmentCameraBinding get() = _fragmentCameraBinding!!
-
-    private lateinit var outputDirectory: File
-    private lateinit var broadcastManager: LocalBroadcastManager
-
-    private var displayId: Int = -1
-    private var lensFacing: Int = CameraSelector.LENS_FACING_BACK
-    private var preview: Preview? = null
-    private var imageCapture: ImageCapture? = null
-    private var imageAnalyzer: ImageAnalysis? = null
-    private var camera: Camera? = null
-    private var cameraProvider: ProcessCameraProvider? = null
-    private lateinit var windowManager: WindowManager
-    private var seletedTimer = CameraTimer.OFF
-
-    private val displayManager by lazy {
-        requireContext().getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+    override val binding: FragmentCameraBinding by lazy {
+        FragmentCameraBinding.inflate(layoutInflater)
     }
 
-    /** Blocking camera operations are performed using this executor */
-    private lateinit var cameraExecutor: ExecutorService
+    private var lensFacing: Int = CameraSelector.LENS_FACING_BACK
+    private var imageCapture: ImageCapture? = null
+    private var imageAnalyzer: ImageAnalysis? = null
+    private var seletedTimer = CameraTimer.OFF
 
-    /** Volume down button receiver used to trigger shutter */
-    private val volumeDownReceiver = object : BroadcastReceiver() {
+    override val volumeDownReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getIntExtra(KEY_EVENT_EXTRA, KeyEvent.KEYCODE_UNKNOWN)) {
                 // When the volume down button is pressed, simulate a shutter button click
                 KeyEvent.KEYCODE_VOLUME_DOWN -> {
-                    fragmentCameraBinding?.cameraCaptureButton?.simulateClick()
+                    binding?.cameraCaptureButton?.simulateClick()
                 }
             }
         }
     }
 
-    /**
-     * We need a display listener for orientation changes that do not trigger a configuration
-     * change, for example if we choose to override config change in manifest or for 180-degree
-     * orientation changes.
-     */
-    private val displayListener = object : DisplayManager.DisplayListener {
+    override val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) = Unit
         override fun onDisplayRemoved(displayId: Int) = Unit
         override fun onDisplayChanged(displayId: Int) = view?.let { view ->
@@ -144,100 +116,21 @@ class CameraFragment : Fragment() {
         } ?: Unit
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Make sure that all permissions are still present, since the
-        // user could have removed them while the app was in paused state.
-        if (!PermissionsFragment.hasPermissions(requireContext())) {
-            Navigation.findNavController(requireActivity(), R.id.fragment_container).navigate(
-                    CameraFragmentDirections.actionCameraToPermissions()
-            )
-        }
-    }
-
-    override fun onDestroyView() {
-        _fragmentCameraBinding = null
-        super.onDestroyView()
-
-        // Shut down our background executor
-        cameraExecutor.shutdown()
-
-        // Unregister the broadcast receivers and listeners
-        broadcastManager.unregisterReceiver(volumeDownReceiver)
-        displayManager.unregisterDisplayListener(displayListener)
-    }
-
-    override fun onCreateView(
-            inflater: LayoutInflater,
-            container: ViewGroup?,
-            savedInstanceState: Bundle?
-    ): View {
-        _fragmentCameraBinding = FragmentCameraBinding.inflate(inflater, container, false)
-        return fragmentCameraBinding.root
-    }
-
-    private fun setGalleryThumbnail(uri: Uri) {
-        // Run the operations in the view's thread
-        fragmentCameraBinding?.photoViewButton?.let { photoViewButton ->
-            photoViewButton.post {
-                // Remove thumbnail padding
-                photoViewButton.setPadding(resources.getDimension(R.dimen.stroke_small).toInt())
-
-                // Load thumbnail into circular button using Glide
-                Glide.with(photoViewButton)
-                        .load(uri)
-                        .apply(RequestOptions.circleCropTransform())
-                        .into(photoViewButton)
-            }
-        }
-    }
-
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        fragmentCameraBinding.fragment = this
+        binding.fragment = this
 
-        // Initialize our background executor
-        cameraExecutor = Executors.newSingleThreadExecutor()
+        setupView()
 
-        broadcastManager = LocalBroadcastManager.getInstance(view.context)
+        postViewFinder(binding.viewFinder)
 
-        // Set up the intent filter that will receive events from our main activity
-        val filter = IntentFilter().apply { addAction(KEY_EVENT_ACTION) }
-        broadcastManager.registerReceiver(volumeDownReceiver, filter)
-
-        // Every time the orientation of device changes, update rotation for use cases
-        displayManager.registerDisplayListener(displayListener, null)
-
-        //Initialize WindowManager to retrieve display metrics
-        windowManager = WindowManager(view.context)
-
-        // Determine the output directory
-        outputDirectory = MainActivity.getOutputDirectory(requireContext())
-
-        // Wait for the views to be properly laid out
-        fragmentCameraBinding.viewFinder.post {
-
-            // Keep track of the display in which this view is attached
-            displayId = fragmentCameraBinding.viewFinder.display.displayId
-
-            // Build UI controls
-            updateCameraUi()
-
-            // Set up the camera and its use cases
-            setUpCamera()
+        gestureListener(binding.viewFinder) {
+            Navigation.findNavController(view).navigate(R.id.action_camera_to_video)
         }
     }
 
-    /**
-     * Inflate camera controls and update the UI manually upon config changes to avoid removing
-     * and re-adding the view finder from the view hierarchy; this provides a seamless rotation
-     * transition on devices that support it.
-     *
-     * NOTE: The flag is supported starting in Android 8 but there still is a small flash on the
-     * screen for devices that run Android 9 or below.
-     */
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
 
@@ -245,11 +138,10 @@ class CameraFragment : Fragment() {
         bindCameraUseCases()
 
         // Enable or disable switching between cameras
-        updateCameraSwitchButton()
+        updateCameraSwitchButton(binding.cameraSwitchButton)
     }
 
-    /** Initialize CameraX, and prepare to bind the camera use cases  */
-    private fun setUpCamera() {
+    override fun setUpCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(requireContext())
         cameraProviderFuture.addListener(Runnable {
 
@@ -264,15 +156,14 @@ class CameraFragment : Fragment() {
             }
 
             // Enable or disable switching between cameras
-            updateCameraSwitchButton()
+            updateCameraSwitchButton(binding.cameraSwitchButton)
 
             // Build and bind the camera use cases
             bindCameraUseCases()
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
-    /** Declare and bind preview, capture and analysis use cases */
-    private fun bindCameraUseCases() {
+    override fun bindCameraUseCases() {
 
         // Get screen metrics used to setup camera for full screen resolution
         val metrics = windowManager.getCurrentWindowMetrics().bounds
@@ -281,7 +172,7 @@ class CameraFragment : Fragment() {
         val screenAspectRatio = aspectRatio(metrics.width(), metrics.height())
         Log.d(TAG, "Preview aspect ratio: $screenAspectRatio")
 
-        val rotation = fragmentCameraBinding.viewFinder.display.rotation
+        val rotation = binding.viewFinder.display.rotation
 
         // CameraProvider
         val cameraProvider = cameraProvider
@@ -337,59 +228,39 @@ class CameraFragment : Fragment() {
                     this, cameraSelector, preview, imageCapture, imageAnalyzer)
 
             // Attach the viewfinder's surface provider to preview use case
-            preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
+            preview?.setSurfaceProvider(binding.viewFinder.surfaceProvider)
         } catch (exc: Exception) {
             Log.e(TAG, "Use case binding failed", exc)
         }
     }
 
-    /**
-     *  [androidx.camera.core.ImageAnalysis.Builder] requires enum value of
-     *  [androidx.camera.core.AspectRatio]. Currently it has values of 4:3 & 16:9.
-     *
-     *  Detecting the most suitable ratio for dimensions provided in @params by counting absolute
-     *  of preview ratio to one of the provided values.
-     *
-     *  @param width - preview width
-     *  @param height - preview height
-     *  @return suitable aspect ratio
-     */
-    private fun aspectRatio(width: Int, height: Int): Int {
-        val previewRatio = max(width, height).toDouble() / min(width, height)
-        if (abs(previewRatio - RATIO_4_3_VALUE) <= abs(previewRatio - RATIO_16_9_VALUE)) {
-            return AspectRatio.RATIO_4_3
-        }
-        return AspectRatio.RATIO_16_9
-    }
-
-    /** Method used to re-draw the camera UI controls, called every time configuration changes. */
-    private fun updateCameraUi() {
+    override fun updateCameraUi() {
         lifecycleScope.launch(Dispatchers.IO) {
             outputDirectory.listFiles { file ->
                 EXTENSION_WHITELIST.contains(file.extension.toUpperCase(Locale.ROOT))
             }?.maxOrNull()?.let {
-                setGalleryThumbnail(Uri.fromFile(it))
+                setGalleryThumbnail(binding.photoViewButton, Uri.fromFile(it))
             }
         }
 
-        fragmentCameraBinding.cameraSwitchButton.isEnabled = false
+        binding.cameraSwitchButton.isEnabled = false
     }
 
     fun takePicture() {
         lifecycleScope.launch(Dispatchers.Main) {
             when (seletedTimer) {
                 CameraTimer.SEC3 -> for (i in 3 downTo 1) {
-                    fragmentCameraBinding.countdown.text = i.toString()
+                    binding.countdown.text = i.toString()
                     delay(1000)
                 }
 
                 CameraTimer.SEC10 -> for (i in 10 downTo 1) {
-                    fragmentCameraBinding.countdown.text = i.toString()
+                    binding.countdown.text = i.toString()
                     delay(1000)
                 }
-                else -> fragmentCameraBinding.countdown.text = ""
+                else -> binding.countdown.text = ""
             }
-            fragmentCameraBinding.countdown.text = ""
+            binding.countdown.text = ""
             imagePhoto()
         }
     }
@@ -427,7 +298,7 @@ class CameraFragment : Fragment() {
                         // We can only change the foreground Drawable using API level 23+ API
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                             // Update the gallery thumbnail with latest picture taken
-                            setGalleryThumbnail(savedUri)
+                            setGalleryThumbnail(binding.photoViewButton, savedUri)
                         }
 
                         // Implicit broadcasts will be ignored for devices running API level >= 24
@@ -457,10 +328,10 @@ class CameraFragment : Fragment() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
 
                 // Display flash animation to indicate that photo was captured
-                fragmentCameraBinding.root.postDelayed({
-                    fragmentCameraBinding.root.foreground = ColorDrawable(Color.WHITE)
-                    fragmentCameraBinding.root.postDelayed(
-                        { fragmentCameraBinding.root.foreground = null }, ANIMATION_FAST_MILLIS)
+                binding.root.postDelayed({
+                    binding.root.foreground = ColorDrawable(Color.WHITE)
+                    binding.root.postDelayed(
+                        { binding.root.foreground = null }, ANIMATION_FAST_MILLIS)
                 }, ANIMATION_SLOW_MILLIS)
             }
         }
@@ -468,10 +339,10 @@ class CameraFragment : Fragment() {
 
     fun switchCamera() {
         lensFacing = if (CameraSelector.LENS_FACING_FRONT == lensFacing) {
-            fragmentCameraBinding.cameraSwitchButton.setImageResource(R.drawable.ic_camera_front)
+            binding.cameraSwitchButton.setImageResource(R.drawable.ic_camera_front)
             CameraSelector.LENS_FACING_BACK
         } else {
-            fragmentCameraBinding.cameraSwitchButton.setImageResource(R.drawable.ic_camera_rear)
+            binding.cameraSwitchButton.setImageResource(R.drawable.ic_camera_rear)
             CameraSelector.LENS_FACING_FRONT
         }
         bindCameraUseCases()
@@ -487,13 +358,13 @@ class CameraFragment : Fragment() {
     }
 
     fun showTimerOptions() {
-        fragmentCameraBinding.timerConteiner.visibility = View.VISIBLE
+        binding.timerConteiner.visibility = View.VISIBLE
     }
 
     fun closeTimerAndSelect(timer: CameraTimer) {
         seletedTimer = timer
-        fragmentCameraBinding.timerConteiner.visibility = View.GONE
-        fragmentCameraBinding.timerButton.setImageResource(setImageDrawableSelect(timer))
+        binding.timerConteiner.visibility = View.GONE
+        binding.timerButton.setImageResource(setImageDrawableSelect(timer))
     }
 
     private fun setImageDrawableSelect(timer: CameraTimer) = when(timer) {
@@ -503,13 +374,13 @@ class CameraFragment : Fragment() {
     }
 
     fun showFlashOptions() {
-        fragmentCameraBinding.flashConteiner.visibility = View.VISIBLE
+        binding.flashConteiner.visibility = View.VISIBLE
     }
 
     fun closeFlashOptionsAndSelect(flashMode: Int) {
         imageCapture?.flashMode = flashMode
-        fragmentCameraBinding.flashConteiner.visibility = View.GONE
-        fragmentCameraBinding.flashButton.setImageResource(setImageDrawableFlashMode(flashMode))
+        binding.flashConteiner.visibility = View.GONE
+        binding.flashButton.setImageResource(setImageDrawableFlashMode(flashMode))
     }
 
     private fun setImageDrawableFlashMode(flashMode: Int) = when(flashMode) {
@@ -519,31 +390,6 @@ class CameraFragment : Fragment() {
         else -> R.drawable.ic_flash_auto
     }
 
-    /** Enabled or disabled a button to switch cameras depending on the available cameras */
-    private fun updateCameraSwitchButton() {
-        try {
-            fragmentCameraBinding?.cameraSwitchButton?.isEnabled = hasBackCamera() && hasFrontCamera()
-        } catch (exception: CameraInfoUnavailableException) {
-            fragmentCameraBinding?.cameraSwitchButton?.isEnabled = false
-        }
-    }
-
-    /** Returns true if the device has an available back camera. False otherwise */
-    private fun hasBackCamera(): Boolean {
-        return cameraProvider?.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) ?: false
-    }
-
-    /** Returns true if the device has an available front camera. False otherwise */
-    private fun hasFrontCamera(): Boolean {
-        return cameraProvider?.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) ?: false
-    }
-
-    /**
-     * Our custom image analysis class.
-     *
-     * <p>All we need to do is override the function `analyze` with our desired operations. Here,
-     * we compute the average luminosity of the image by looking at the Y plane of the YUV frame.
-     */
     private class LuminosityAnalyzer(listener: LumaListener? = null) : ImageAnalysis.Analyzer {
         private val frameRateWindow = 8
         private val frameTimestamps = ArrayDeque<Long>(5)
@@ -625,17 +471,4 @@ class CameraFragment : Fragment() {
         }
     }
 
-    companion object {
-
-        private const val TAG = "CameraXBasic"
-        private const val FILENAME = "yyyy-MM-dd-HH-mm-ss-SSS"
-        private const val PHOTO_EXTENSION = ".jpg"
-        private const val RATIO_4_3_VALUE = 4.0 / 3.0
-        private const val RATIO_16_9_VALUE = 16.0 / 9.0
-
-        /** Helper function used to create a timestamped file */
-        private fun createFile(baseFolder: File, format: String, extension: String) =
-                File(baseFolder, SimpleDateFormat(format, Locale.US)
-                        .format(System.currentTimeMillis()) + extension)
-    }
 }

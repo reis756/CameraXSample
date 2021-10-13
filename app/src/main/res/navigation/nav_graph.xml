@@ -48,6 +48,35 @@
             app:popUpTo="@id/camera_fragment"
             app:popUpToInclusive="true"/>
 
+        <action
+            android:id="@+id/action_camera_to_video"
+            app:destination="@id/video_fragment"
+            app:popUpTo="@id/camera_fragment"
+            app:popUpToInclusive="true"/>
+
+    </fragment>
+
+    <fragment
+        android:id="@+id/video_fragment"
+        android:name="com.android.example.cameraxbasic.fragments.VideoFragment"
+        android:label="VideoFragment" >
+
+        <action
+            android:id="@+id/action_video_to_gallery"
+            app:destination="@id/gallery_fragment" />
+
+        <action
+            android:id="@+id/action_video_to_permissions"
+            app:destination="@id/permissions_fragment"
+            app:popUpTo="@id/video_fragment"
+            app:popUpToInclusive="true"/>
+
+        <action
+            android:id="@+id/action_video_to_camera"
+            app:destination="@id/camera_fragment"
+            app:popUpTo="@id/video_fragment"
+            app:popUpToInclusive="true"/>
+
     </fragment>
 
     <fragment
